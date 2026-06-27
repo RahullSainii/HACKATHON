@@ -10,6 +10,18 @@ Built for the **Vibe2Ship Hackathon** and deployed on **Google Cloud Run**.
 
 **Cloud Run:** https://samadhaan-vibe2ship-297216988135.europe-west1.run.app  
 **Health Check:** https://samadhaan-vibe2ship-297216988135.europe-west1.run.app/api/health
+<img width="1912" height="967" alt="image" src="https://github.com/user-attachments/assets/af4f14b5-8d47-4969-81eb-f0c114bc5a8c" />
+
+<img width="1897" height="855" alt="image" src="https://github.com/user-attachments/assets/ef236c1a-cf44-404f-b330-fd49206ba0e1" />
+
+<img width="1907" height="832" alt="image" src="https://github.com/user-attachments/assets/0028842d-53b7-4bbc-8047-beff62415b0c" />
+
+<img width="1907" height="837" alt="image" src="https://github.com/user-attachments/assets/955b17ce-7260-4f19-a85c-0bc06b3321ce" />
+
+<img width="1867" height="765" alt="image" src="https://github.com/user-attachments/assets/51ca013b-1588-43de-b5a5-74da9a6ba0d1" />
+
+
+
 
 ### Demo Login For Judges
 
