@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "npx mocha tests/**/*.spec.js --timeout 60000 --reporter spec",
-    "test:show": "npx mocha tests/**/*.spec.js --timeout 60000 --reporter spec"
+    "test:show": "npx mocha tests/**/*.spec.js --timeout 60000 --reporter .\\tests\\reporters\\spec-testng-reporter.js",
+    "report:xslt": "ant -f build.xml generate-report"
   },
   "dependencies": {
     "selenium-webdriver": "^4.17.0",

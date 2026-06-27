@@ -1,0 +1,17 @@
+node_modules/
+**/node_modules/
+**/dist/
+**/build/
+.metadata/
+.vscode/
+.idea/
+e2e-tests/
+selenium_test/
+frontend/
+.git/
+.gitignore
+*.log
+.env
+.env.*
+.DS_Store
+Thumbs.db

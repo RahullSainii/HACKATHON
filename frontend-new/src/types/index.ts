@@ -20,10 +20,23 @@ export interface Complaint {
   createdAt: string;
   updatedAt: string;
   location?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  imageUrls?: string[];
+  videoUrls?: string[];
   isAnonymous?: boolean;
   handledBy?: string;
   reportedBy?: string;
   attachmentCount?: number;
+  verificationCount?: number;
+  verifiedBy?: string[];
+  verifiedAt?: string | null;
+  aiCategorySuggestion?: {
+    category: string;
+    confidence: number;
+    reason: string;
+    source: 'heuristic' | 'openai' | 'none';
+  };
   attachments?: {
     name: string;
     type: string;
@@ -61,6 +74,9 @@ export interface Stats {
   total: number;
   pending: number;
   resolved: number;
+  resolvedThisMonth?: number;
+  verifiedIssues?: number;
+  communityImpactScore?: number;
   categoryDistribution: {
     labels: string[];
     data: number[];
@@ -69,4 +85,23 @@ export interface Stats {
     labels: string[];
     data: number[];
   };
+  responseTimeTrend?: {
+    day: string;
+    avgHours: number;
+    count: number;
+  }[];
+  activeZones?: {
+    location: string;
+    count: number;
+    open: number;
+  }[];
+  leaderboard?: {
+    rank: number;
+    name: string;
+    email: string;
+    points: number;
+    reportsSubmitted: number;
+    verificationsGiven: number;
+    badges: string[];
+  }[];
 }

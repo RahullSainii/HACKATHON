@@ -30,8 +30,19 @@ This directory contains Selenium-based end-to-end (E2E) tests for the Samadhaan 
     In a new terminal, from the `e2e-tests` directory:
     *Ensure you have run `npm install` inside this directory first to install Mocha.*
     ```bash
-    npm test
+    # PowerShell
+    cd C:\Users\HP\Desktop\Samadhaan---complaint-management-master\e2e-tests
+    Remove-Item Env:HEADLESS -ErrorAction SilentlyContinue
+    npm.cmd run test:show
     ```
+    This command also writes `test-output\testng-results.xml` for XSLT report generation.
+
+3.  **Generate XSLT report HTML**:
+    ```bash
+    # Requires Apache Ant in PATH
+    ant -f C:\Users\HP\Desktop\Samadhaan---complaint-management-master\e2e-tests\build.xml generate-report
+    ```
+    Generated file: `test-output\XSLT_Report.html`
 
 ## Registration Test (Backend Script)
 

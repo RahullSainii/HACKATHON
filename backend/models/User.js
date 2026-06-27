@@ -38,6 +38,39 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  reputation: {
+    points: {
+      type: Number,
+      default: 0,
+    },
+    reportsSubmitted: {
+      type: Number,
+      default: 0,
+    },
+    reportsVerified: {
+      type: Number,
+      default: 0,
+    },
+    verificationsGiven: {
+      type: Number,
+      default: 0,
+    },
+    currentStreak: {
+      type: Number,
+      default: 0,
+    },
+    longestStreak: {
+      type: Number,
+      default: 0,
+    },
+    lastContributionAt: Date,
+    badges: [
+      {
+        type: String,
+        trim: true,
+      },
+    ],
+  },
   refreshToken: String,
   resetPinHash: String,
   resetPinExpires: Date,

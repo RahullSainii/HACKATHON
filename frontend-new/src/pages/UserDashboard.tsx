@@ -16,6 +16,7 @@ import {
   Chip,
   Alert,
   CircularProgress,
+  LinearProgress,
   IconButton,
   InputAdornment,
   Tooltip,
@@ -23,11 +24,17 @@ import {
   FormControlLabel,
   Switch,
   ListSubheader,
+  Card,
+  CardContent,
 } from '@mui/material';
 import Grid from '@mui/material/Grid';
-import { Search, PlusCircle, RefreshCw, Camera, Upload, X, MapPin, Navigation } from 'lucide-react';
+import { Search, PlusCircle, RefreshCw, Camera, Upload, X, MapPin, Navigation, BadgeCheck, Sparkles } from 'lucide-react';
+import { io } from 'socket.io-client';
 import api from '../services/api';
 import type { Complaint } from '../types';
+
+const rawOrigin = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+const API_ORIGIN = rawOrigin.replace(/\/api\/?$/, '') || window.location.origin;
 
 const UserDashboard: React.FC = () => {
   const categoryGroups = [
@@ -92,6 +99,7 @@ const UserDashboard: React.FC = () => {
   const [complaints, setComplaints] = useState<Complaint[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -105,9 +113,12 @@ const UserDashboard: React.FC = () => {
   const [gpsError, setGpsError] = useState('');
   const [gpsCoords, setGpsCoords] = useState<{ lat: number; lon: number } | null>(null);
   const [gpsSupported, setGpsSupported] = useState(true);
+  const [nearbyComplaints, setNearbyComplaints] = useState<Complaint[]>([]);
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachmentPreviews, setAttachmentPreviews] = useState<string[]>([]);
   const [attachmentError, setAttachmentError] = useState('');
+  const [aiSuggestion, setAiSuggestion] = useState<Complaint['aiCategorySuggestion'] | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
   const [cameraError, setCameraError] = useState('');
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraSupported, setCameraSupported] = useState(true);
@@ -116,7 +127,8 @@ const UserDashboard: React.FC = () => {
   const streamRef = useRef<MediaStream | null>(null);
 
   const MAX_ATTACHMENTS = 3;
-  const MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024;
+  const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
+  const MAX_VIDEO_SIZE = 30 * 1024 * 1024;
 
   // Filter state
   const [search, setSearch] = useState('');
@@ -136,6 +148,16 @@ const UserDashboard: React.FC = () => {
 
   useEffect(() => {
     fetchComplaints();
+  }, []);
+
+  useEffect(() => {
+    const socket = io(API_ORIGIN, { transports: ['websocket', 'polling'] });
+    socket.on('complaint_created', fetchComplaints);
+    socket.on('complaint_updated', fetchComplaints);
+    socket.on('verification_added', fetchComplaints);
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   useEffect(() => {
@@ -201,37 +223,33 @@ const UserDashboard: React.FC = () => {
         return;
       }
 
-      const attachmentPayload = await Promise.all(
-        attachments.map(async (file) => {
-          const data = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(new Error('Failed to read file'));
-            reader.readAsDataURL(file);
-          });
+      const formData = new FormData();
+      formData.append('category', category);
+      formData.append('priority', priority);
+      formData.append('description', description);
+      formData.append('location', location.trim());
+      formData.append('isAnonymous', String(isAnonymous));
+      if (gpsCoords) {
+        formData.append('latitude', String(gpsCoords.lat));
+        formData.append('longitude', String(gpsCoords.lon));
+      }
+      attachments.forEach((file) => formData.append('files', file));
 
-          return {
-            name: file.name,
-            type: file.type,
-            size: file.size,
-            data,
-          };
-        })
-      );
-
-      await api.post('/complaints', {
-        category,
-        priority,
-        description,
-        location: location.trim(),
-        isAnonymous,
-        attachments: attachmentPayload,
+      await api.post('/complaints', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        onUploadProgress: (event) => {
+          if (!event.total) return;
+          setUploadProgress(Math.round((event.loaded * 100) / event.total));
+        },
       });
       setSuccess('Complaint submitted successfully!');
       setCategory('');
       setPriority('Medium');
       setDescription('');
       setLocation('');
+      setGpsCoords(null);
+      setNearbyComplaints([]);
+      setAiSuggestion(null);
       setIsAnonymous(false);
       attachmentPreviews.forEach((url) => URL.revokeObjectURL(url));
       setAttachments([]);
@@ -247,6 +265,7 @@ const UserDashboard: React.FC = () => {
       }
     } finally {
       setSubmitting(false);
+      setUploadProgress(0);
     }
   };
 
@@ -289,6 +308,9 @@ const UserDashboard: React.FC = () => {
         setGpsCoords({ lat, lon });
         setLocation(`GPS: ${lat.toFixed(5)}, ${lon.toFixed(5)}`);
         setGpsLoading(false);
+        api.get('/complaints/nearby', { params: { lat, lng: lon, radiusKm: 2 } })
+          .then((response) => setNearbyComplaints(response.data.data || []))
+          .catch(() => setNearbyComplaints([]));
       },
       (err) => {
         setGpsError(err.message || 'Unable to access GPS location.');
@@ -302,6 +324,52 @@ const UserDashboard: React.FC = () => {
     );
   };
 
+  const analyzeCategory = async () => {
+    if (!description.trim() || description.trim().length < 10) {
+      setAttachmentError('Add a clearer description before asking AI to suggest a category.');
+      return;
+    }
+
+    setAiLoading(true);
+    setAiSuggestion(null);
+    try {
+      const imagePayload = await Promise.all(
+        attachments
+          .filter((file) => file.type.startsWith('image/'))
+          .slice(0, 2)
+          .map(async (file) => {
+            const data = await new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result as string);
+              reader.onerror = () => reject(new Error('Failed to read file'));
+              reader.readAsDataURL(file);
+            });
+
+            return {
+              name: file.name,
+              type: file.type,
+              size: file.size,
+              data,
+            };
+          })
+      );
+
+      const response = await api.post('/complaints/ai-category', {
+        description,
+        attachments: imagePayload,
+      });
+      const suggestion = response.data.data;
+      setAiSuggestion(suggestion);
+      if (suggestion.category && suggestion.confidence >= 60) {
+        setCategory(suggestion.category);
+      }
+    } catch (err: any) {
+      setAttachmentError(err.response?.data?.message || 'AI category analysis failed.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const addAttachments = (files: File[]) => {
     setAttachmentError('');
 
@@ -309,12 +377,18 @@ const UserDashboard: React.FC = () => {
     const nextPreviews = [...attachmentPreviews];
 
     for (const file of files) {
-      if (!file.type.startsWith('image/')) {
-        setAttachmentError('Only image files are allowed.');
+      const isImage = file.type.startsWith('image/');
+      const isVideo = file.type.startsWith('video/');
+      if (!isImage && !isVideo) {
+        setAttachmentError('Only image and video files are allowed.');
         continue;
       }
-      if (file.size > MAX_ATTACHMENT_SIZE) {
-        setAttachmentError('Each image must be under 2MB.');
+      if (isImage && file.size > MAX_IMAGE_SIZE) {
+        setAttachmentError('Each image must be under 5MB.');
+        continue;
+      }
+      if (isVideo && file.size > MAX_VIDEO_SIZE) {
+        setAttachmentError('Each video must be under 30MB.');
         continue;
       }
       if (nextFiles.length >= MAX_ATTACHMENTS) {
@@ -368,6 +442,16 @@ const UserDashboard: React.FC = () => {
     }
     setAttachments(prev => prev.filter((_, i) => i !== index));
     setAttachmentPreviews(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const verifyComplaint = async (id: string) => {
+    try {
+      await api.post(`/complaints/${id}/verify`);
+      setSuccess('Thanks for confirming this issue.');
+      fetchComplaints();
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Unable to verify this complaint.');
+    }
   };
 
   return (
@@ -497,6 +581,34 @@ const UserDashboard: React.FC = () => {
                 placeholder="Describe your issue in detail (min 10 characters)"
               />
 
+              <Card variant="outlined" sx={{ mt: 2, bgcolor: 'rgba(14, 165, 233, 0.04)' }}>
+                <CardContent sx={{ p: 2, '&:last-child': { pb: 2 } }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }}>
+                    <Box sx={{ flexGrow: 1 }}>
+                      <Typography variant="subtitle2" fontWeight={700} sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                        <Sparkles size={16} /> AI Auto-Categorization
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Uses GPT Vision when configured, otherwise falls back to local keyword analysis.
+                      </Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={analyzeCategory}
+                      disabled={aiLoading}
+                    >
+                      {aiLoading ? 'Analyzing...' : 'Suggest'}
+                    </Button>
+                  </Stack>
+                  {aiSuggestion && (
+                    <Alert severity={aiSuggestion.confidence >= 60 ? 'success' : 'info'} sx={{ mt: 1.5 }}>
+                      {aiSuggestion.category || 'No confident match'} ({aiSuggestion.confidence}%): {aiSuggestion.reason}
+                    </Alert>
+                  )}
+                </CardContent>
+              </Card>
+
               <FormControlLabel
                 sx={{ mt: 1 }}
                 control={
@@ -528,14 +640,14 @@ const UserDashboard: React.FC = () => {
                   />
                 </Box>
                 <Typography variant="caption" color="text.secondary">
-                  Capture from camera or upload images (max 3, 2MB each).
+                  Capture from camera or upload images/videos (max 3 files, 5MB images, 30MB videos).
                 </Typography>
 
                 <Stack direction="row" spacing={2} sx={{ mt: 2, flexWrap: 'wrap' }}>
                   <input
                     ref={uploadInputRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,video/*"
                     multiple
                     style={{ display: 'none' }}
                     onChange={(e) => {
@@ -637,18 +749,33 @@ const UserDashboard: React.FC = () => {
                   >
                     {attachmentPreviews.map((preview, index) => (
                       <Box key={preview} sx={{ position: 'relative' }}>
-                        <Box
-                          component="img"
-                          src={preview}
-                          alt={`attachment-${index + 1}`}
-                          sx={{
-                            width: '100%',
-                            height: 80,
-                            objectFit: 'cover',
-                            borderRadius: 1.5,
-                            border: '1px solid rgba(15, 23, 42, 0.12)',
-                          }}
-                        />
+                        {attachments[index]?.type.startsWith('video/') ? (
+                          <Box
+                            component="video"
+                            src={preview}
+                            muted
+                            sx={{
+                              width: '100%',
+                              height: 80,
+                              objectFit: 'cover',
+                              borderRadius: 1.5,
+                              border: '1px solid rgba(15, 23, 42, 0.12)',
+                            }}
+                          />
+                        ) : (
+                          <Box
+                            component="img"
+                            src={preview}
+                            alt={`attachment-${index + 1}`}
+                            sx={{
+                              width: '100%',
+                              height: 80,
+                              objectFit: 'cover',
+                              borderRadius: 1.5,
+                              border: '1px solid rgba(15, 23, 42, 0.12)',
+                            }}
+                          />
+                        )}
                         <Tooltip title="Remove">
                           <IconButton
                             size="small"
@@ -682,8 +809,35 @@ const UserDashboard: React.FC = () => {
               >
                 {submitting ? <CircularProgress size={24} /> : 'Submit Complaint'}
               </Button>
+              {submitting && uploadProgress > 0 && (
+                <Box sx={{ mt: 1.5 }}>
+                  <LinearProgress variant="determinate" value={uploadProgress} />
+                  <Typography variant="caption" color="text.secondary">
+                    Uploading evidence: {uploadProgress}%
+                  </Typography>
+                </Box>
+              )}
             </form>
           </Paper>
+
+          {nearbyComplaints.length > 0 && (
+            <Paper elevation={2} sx={{ p: 3, mt: 3 }}>
+              <Typography variant="h6" fontWeight={700} gutterBottom>
+                Nearby Complaints
+              </Typography>
+              <Stack spacing={1.5}>
+                {nearbyComplaints.slice(0, 4).map((item) => (
+                  <Box key={item._id} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2 }}>
+                    <Box>
+                      <Typography variant="body2" fontWeight={700}>{item.category}</Typography>
+                      <Typography variant="caption" color="text.secondary">{item.location}</Typography>
+                    </Box>
+                    <Chip size="small" label={item.status} />
+                  </Box>
+                ))}
+              </Stack>
+            </Paper>
+          )}
         </Grid>
 
         {/* Complaints List */}
@@ -738,19 +892,20 @@ const UserDashboard: React.FC = () => {
                     <TableCell>Status</TableCell>
                     <TableCell>Handled By</TableCell>
                     <TableCell>Attachments</TableCell>
+                    <TableCell>Verifications</TableCell>
                     <TableCell>Date</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={7} align="center" sx={{ py: 3 }}>
+                      <TableCell colSpan={8} align="center" sx={{ py: 3 }}>
                         <CircularProgress size={24} />
                       </TableCell>
                     </TableRow>
                   ) : filteredComplaints.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} align="center" sx={{ py: 3 }}>
+                      <TableCell colSpan={8} align="center" sx={{ py: 3 }}>
                         No complaints found.
                       </TableCell>
                     </TableRow>
@@ -773,6 +928,22 @@ const UserDashboard: React.FC = () => {
                           size="small"
                           variant="outlined"
                         />
+                      </TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={1} alignItems="center">
+                          <Chip
+                            icon={<BadgeCheck size={14} />}
+                            label={complaint.verificationCount || 0}
+                            size="small"
+                            color={complaint.verifiedAt ? 'success' : 'default'}
+                            variant={complaint.verifiedAt ? 'filled' : 'outlined'}
+                          />
+                          <Tooltip title="Confirm this issue">
+                            <IconButton size="small" onClick={() => verifyComplaint(complaint._id)}>
+                              <BadgeCheck size={16} />
+                            </IconButton>
+                          </Tooltip>
+                        </Stack>
                       </TableCell>
                       <TableCell>{complaint.date}</TableCell>
                     </TableRow>

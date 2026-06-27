@@ -1,5 +1,29 @@
 const mongoose = require('mongoose');
 
+const pointSchema = new mongoose.Schema({
+  type: {
+    type: String,
+    enum: ['Point'],
+    required: true,
+  },
+  coordinates: {
+    type: [Number],
+    required: true,
+    validate: {
+      validator(value) {
+        return (
+          value.length === 2 &&
+          value[0] >= -180 &&
+          value[0] <= 180 &&
+          value[1] >= -90 &&
+          value[1] <= 90
+        );
+      },
+      message: 'Coordinates must be [longitude, latitude]',
+    },
+  },
+}, { _id: false });
+
 const complaintSchema = new mongoose.Schema({
   category: {
     type: String,
@@ -70,6 +94,22 @@ const complaintSchema = new mongoose.Schema({
     default: '',
     trim: true,
   },
+  coordinates: {
+    type: pointSchema,
+    default: undefined,
+  },
+  imageUrls: [
+    {
+      type: String,
+      trim: true,
+    },
+  ],
+  videoUrls: [
+    {
+      type: String,
+      trim: true,
+    },
+  ],
   isAnonymous: {
     type: Boolean,
     default: false,
@@ -92,6 +132,49 @@ const complaintSchema = new mongoose.Schema({
       data: { type: String, default: '' },
     },
   ],
+  aiCategorySuggestion: {
+    category: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    confidence: {
+      type: Number,
+      default: 0,
+      min: 0,
+      max: 100,
+    },
+    reason: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    source: {
+      type: String,
+      enum: ['heuristic', 'openai', 'none'],
+      default: 'none',
+    },
+  },
+  verificationVotes: [
+    {
+      userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        required: true,
+      },
+      votedAt: {
+        type: Date,
+        default: Date.now,
+      },
+    },
+  ],
+  verifiedBy: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+  ],
+  verifiedAt: Date,
   moderation: {
     status: {
       type: String,
@@ -137,6 +220,8 @@ complaintSchema.index({ status: 1 });
 complaintSchema.index({ category: 1 });
 complaintSchema.index({ date: -1 });
 complaintSchema.index({ location: 1 });
+complaintSchema.index({ coordinates: '2dsphere' });
+complaintSchema.index({ 'verificationVotes.userId': 1 });
 complaintSchema.index({ userId: 1, category: 1, createdAt: -1 });
 complaintSchema.index({ 'moderation.status': 1, createdAt: -1 });
 

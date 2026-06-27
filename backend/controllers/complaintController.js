@@ -1,12 +1,22 @@
 const Complaint = require('../models/Complaint');
+const User = require('../models/User');
 const { validationResult } = require('express-validator');
 const { analyzeComplaintSubmission } = require('../utils/complaintFraudDetector');
+const { storeUploadedFiles } = require('../utils/uploadService');
+const { suggestCategory } = require('../utils/aiCategorizer');
 
 const MAX_ATTACHMENTS = 3;
 const MAX_ATTACHMENT_SIZE = 2 * 1024 * 1024; // 2MB
 
 const normalizeAttachments = (attachments) => {
   if (!attachments) return [];
+  if (typeof attachments === 'string') {
+    try {
+      attachments = JSON.parse(attachments);
+    } catch {
+      throw new Error('Attachments must be valid JSON');
+    }
+  }
   if (!Array.isArray(attachments)) {
     throw new Error('Attachments must be an array');
   }
@@ -56,8 +66,64 @@ const normalizeAttachments = (attachments) => {
   });
 };
 
+const parseCoordinates = ({ latitude, longitude, coordinates }) => {
+  if (coordinates && typeof coordinates === 'object' && Array.isArray(coordinates.coordinates)) {
+    const [lng, lat] = coordinates.coordinates.map(Number);
+    if (Number.isFinite(lat) && Number.isFinite(lng)) {
+      return { type: 'Point', coordinates: [lng, lat] };
+    }
+  }
+
+  const lat = Number(latitude);
+  const lng = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return undefined;
+  return { type: 'Point', coordinates: [lng, lat] };
+};
+
+const getBadges = (reputation = {}) => {
+  const badges = new Set(reputation.badges || []);
+  if ((reputation.reportsSubmitted || 0) >= 1) badges.add('First Reporter');
+  if ((reputation.reportsSubmitted || 0) >= 5) badges.add('Community Hero');
+  if ((reputation.verificationsGiven || 0) >= 3) badges.add('Verification Expert');
+  if ((reputation.currentStreak || 0) >= 3) badges.add('Streak Builder');
+  return [...badges];
+};
+
+const updateContributionStreak = (reputation = {}) => {
+  const now = new Date();
+  const last = reputation.lastContributionAt ? new Date(reputation.lastContributionAt) : null;
+  const sameDay = last && now.toDateString() === last.toDateString();
+  const yesterday = last && (now - last) <= 48 * 60 * 60 * 1000 && now.getDate() !== last.getDate();
+
+  const currentStreak = sameDay
+    ? reputation.currentStreak || 1
+    : yesterday
+      ? (reputation.currentStreak || 0) + 1
+      : 1;
+
+  return {
+    currentStreak,
+    longestStreak: Math.max(reputation.longestStreak || 0, currentStreak),
+    lastContributionAt: now,
+  };
+};
+
+const awardUserPoints = async (userId, updater) => {
+  const user = await User.findById(userId);
+  if (!user) return;
+
+  const nextReputation = updater(user.reputation || {});
+  user.reputation = {
+    ...(user.reputation?.toObject ? user.reputation.toObject() : user.reputation || {}),
+    ...nextReputation,
+  };
+  user.reputation.badges = getBadges(user.reputation);
+  await user.save();
+};
+
 const formatComplaint = (complaint, viewerRole) => {
   const isAnonymous = Boolean(complaint.isAnonymous);
+  const coords = complaint.coordinates?.coordinates;
   const base = {
     id: `#${String(complaint._id.toString().slice(-3)).padStart(3, '0')}`,
     _id: complaint._id,
@@ -68,9 +134,25 @@ const formatComplaint = (complaint, viewerRole) => {
     date: complaint.date.toISOString().split('T')[0],
     createdAt: complaint.createdAt,
     location: complaint.location || '',
+    latitude: coords ? coords[1] : null,
+    longitude: coords ? coords[0] : null,
+    imageUrls: complaint.imageUrls || [],
+    videoUrls: complaint.videoUrls || [],
     isAnonymous,
     handledBy: complaint.handledBy || '',
-    attachmentCount: complaint.attachments ? complaint.attachments.length : 0,
+    attachmentCount:
+      (complaint.attachments ? complaint.attachments.length : 0)
+      + (complaint.imageUrls ? complaint.imageUrls.length : 0)
+      + (complaint.videoUrls ? complaint.videoUrls.length : 0),
+    verificationCount: complaint.verificationVotes ? complaint.verificationVotes.length : 0,
+    verifiedBy: complaint.verifiedBy || [],
+    verifiedAt: complaint.verifiedAt || null,
+    aiCategorySuggestion: complaint.aiCategorySuggestion || {
+      category: '',
+      confidence: 0,
+      reason: '',
+      source: 'none',
+    },
     moderation: complaint.moderation
       ? {
           status: complaint.moderation.status || 'clean',
@@ -131,7 +213,7 @@ exports.submitComplaint = async (req, res) => {
       });
     }
 
-    const { category, description, priority, attachments, location, isAnonymous } = req.body;
+    const { category, description, priority, attachments, location, isAnonymous, latitude, longitude } = req.body;
 
     let normalizedAttachments = [];
     try {
@@ -143,6 +225,26 @@ exports.submitComplaint = async (req, res) => {
       });
     }
 
+    let storedUploads = { imageUrls: [], videoUrls: [] };
+    try {
+      storedUploads = await storeUploadedFiles(req.files || []);
+    } catch (err) {
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'Invalid file upload',
+      });
+    }
+
+    const imageDataUrls = normalizedAttachments
+      .filter((att) => att.type.startsWith('image/'))
+      .map((att) => att.data);
+    const aiCategorySuggestion = await suggestCategory({ description, imageDataUrls });
+    const finalCategory =
+      aiCategorySuggestion.category && aiCategorySuggestion.confidence >= 72
+        ? aiCategorySuggestion.category
+        : category;
+    const coordinates = parseCoordinates({ latitude, longitude });
+
     const recentComplaints = await Complaint.find({
       userId: req.user.id,
       createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
@@ -152,7 +254,7 @@ exports.submitComplaint = async (req, res) => {
       .limit(15);
 
     const moderation = analyzeComplaintSubmission({
-      category,
+      category: finalCategory,
       description,
       location,
       attachments: normalizedAttachments,
@@ -168,16 +270,32 @@ exports.submitComplaint = async (req, res) => {
     }
 
     const complaint = await Complaint.create({
-      category,
+      category: finalCategory,
       description,
       priority: priority || 'Medium',
       userId: req.user.id,
       date: new Date(),
       attachments: normalizedAttachments,
+      imageUrls: storedUploads.imageUrls,
+      videoUrls: storedUploads.videoUrls,
       location: location || '',
+      coordinates,
       isAnonymous: Boolean(isAnonymous),
+      aiCategorySuggestion,
       moderation,
     });
+
+    await awardUserPoints(req.user.id, (reputation) => {
+      const streak = updateContributionStreak(reputation);
+      const reportsSubmitted = (reputation.reportsSubmitted || 0) + 1;
+      return {
+        ...streak,
+        reportsSubmitted,
+        points: (reputation.points || 0) + 10,
+      };
+    });
+
+    req.app.get('io')?.emit('complaint_created', formatComplaint(complaint, 'Admin'));
 
     res.status(201).json({
       success: true,
@@ -200,7 +318,7 @@ exports.submitComplaint = async (req, res) => {
 // @access  Private
 exports.getComplaints = async (req, res) => {
   try {
-    const { category, priority, status, date, search } = req.query;
+    const { category, priority, status, date, search, lat, lng, radiusKm } = req.query;
     const isAdmin = req.user.role === 'Admin';
 
     // Build query
@@ -235,6 +353,18 @@ exports.getComplaints = async (req, res) => {
     // Search in description
     if (search) {
       query.description = { $regex: search, $options: 'i' };
+    }
+
+    if (lat && lng) {
+      query.coordinates = {
+        $near: {
+          $geometry: {
+            type: 'Point',
+            coordinates: [Number(lng), Number(lat)],
+          },
+          $maxDistance: Math.max(1, Number(radiusKm) || 5) * 1000,
+        },
+      };
     }
 
     const complaints = await Complaint.find(query)
@@ -341,6 +471,9 @@ exports.getComplaintById = async (req, res) => {
       data: {
         ...formatted,
         attachments: complaint.attachments || [],
+        imageUrls: complaint.imageUrls || [],
+        videoUrls: complaint.videoUrls || [],
+        verificationVotes: complaint.verificationVotes || [],
       },
     });
   } catch (error) {
@@ -391,6 +524,8 @@ exports.updateStatus = async (req, res) => {
     }
     await complaint.save();
 
+    req.app.get('io')?.emit('complaint_updated', formatComplaint(complaint, 'Admin'));
+
     res.status(200).json({
       success: true,
       message: 'Complaint updated successfully',
@@ -400,6 +535,138 @@ exports.updateStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: error.message || 'Server error',
+    });
+  }
+};
+
+// @desc    Add community verification vote
+// @route   POST /api/complaints/:id/verify
+// @access  Private
+exports.verifyComplaint = async (req, res) => {
+  try {
+    const complaint = await Complaint.findById(req.params.id);
+
+    if (!complaint) {
+      return res.status(404).json({
+        success: false,
+        message: 'Complaint not found',
+      });
+    }
+
+    if (complaint.userId.toString() === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot verify your own complaint',
+      });
+    }
+
+    const alreadyVoted = complaint.verificationVotes.some(
+      (vote) => vote.userId.toString() === req.user.id
+    );
+
+    if (alreadyVoted) {
+      return res.status(409).json({
+        success: false,
+        message: 'You have already verified this issue',
+      });
+    }
+
+    complaint.verificationVotes.push({ userId: req.user.id });
+    complaint.verifiedBy = complaint.verificationVotes.map((vote) => vote.userId);
+    if (complaint.verificationVotes.length >= 3 && !complaint.verifiedAt) {
+      complaint.verifiedAt = new Date();
+      await awardUserPoints(complaint.userId, (reputation) => ({
+        reportsVerified: (reputation.reportsVerified || 0) + 1,
+        points: (reputation.points || 0) + 25,
+      }));
+    }
+    await complaint.save();
+
+    await awardUserPoints(req.user.id, (reputation) => {
+      const streak = updateContributionStreak(reputation);
+      return {
+        ...streak,
+        verificationsGiven: (reputation.verificationsGiven || 0) + 1,
+        points: (reputation.points || 0) + 5,
+      };
+    });
+
+    const formatted = formatComplaint(complaint, req.user.role);
+    req.app.get('io')?.emit('verification_added', formatted);
+
+    res.status(200).json({
+      success: true,
+      message: 'Issue verified successfully',
+      data: formatted,
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error',
+    });
+  }
+};
+
+// @desc    Get complaints around coordinates
+// @route   GET /api/complaints/nearby?lat=&lng=&radiusKm=
+// @access  Private
+exports.getNearbyComplaints = async (req, res) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    const radiusKm = Math.max(0.2, Number(req.query.radiusKm) || 2);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({
+        success: false,
+        message: 'lat and lng query params are required',
+      });
+    }
+
+    const complaints = await Complaint.find({
+      coordinates: {
+        $near: {
+          $geometry: { type: 'Point', coordinates: [lng, lat] },
+          $maxDistance: radiusKm * 1000,
+        },
+      },
+    })
+      .populate('userId', 'name email')
+      .limit(50);
+
+    res.status(200).json({
+      success: true,
+      count: complaints.length,
+      data: complaints.map((complaint) => formatComplaint(complaint, req.user.role)),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Server error',
+    });
+  }
+};
+
+// @desc    Preview AI category suggestion before submitting
+// @route   POST /api/complaints/ai-category
+// @access  Private
+exports.previewCategorySuggestion = async (req, res) => {
+  try {
+    const { description, attachments } = req.body;
+    const normalizedAttachments = normalizeAttachments(attachments);
+    const imageDataUrls = normalizedAttachments
+      .filter((att) => att.type.startsWith('image/'))
+      .map((att) => att.data);
+    const suggestion = await suggestCategory({ description, imageDataUrls });
+
+    res.status(200).json({
+      success: true,
+      data: suggestion,
+    });
+  } catch (error) {
+    res.status(400).json({
+      success: false,
+      message: error.message || 'Unable to analyze category',
     });
   }
 };

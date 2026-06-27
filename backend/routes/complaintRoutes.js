@@ -4,6 +4,7 @@ const { body } = require('express-validator');
 const complaintController = require('../controllers/complaintController');
 const authMiddleware = require('../middleware/authMiddleware');
 const adminMiddleware = require('../middleware/adminMiddleware');
+const upload = require('../middleware/uploadMiddleware');
 
 // Validation rules
 const complaintValidation = [
@@ -52,6 +53,14 @@ const complaintValidation = [
     .trim()
     .notEmpty()
     .withMessage('Location is required'),
+  body('latitude')
+    .optional({ values: 'falsy' })
+    .isFloat({ min: -90, max: 90 })
+    .withMessage('Latitude must be between -90 and 90'),
+  body('longitude')
+    .optional({ values: 'falsy' })
+    .isFloat({ min: -180, max: 180 })
+    .withMessage('Longitude must be between -180 and 180'),
   body('description')
     .trim()
     .notEmpty()
@@ -88,10 +97,13 @@ const statusValidation = [
 ];
 
 // Routes
-router.post('/', authMiddleware, complaintValidation, complaintController.submitComplaint);
+router.post('/ai-category', authMiddleware, complaintController.previewCategorySuggestion);
+router.post('/', authMiddleware, upload.array('files', 5), complaintValidation, complaintController.submitComplaint);
 router.get('/my', authMiddleware, complaintController.getMyComplaints);
+router.get('/nearby', authMiddleware, complaintController.getNearbyComplaints);
 router.get('/', authMiddleware, complaintController.getComplaints);
 router.get('/:id', authMiddleware, complaintController.getComplaintById);
+router.post('/:id/verify', authMiddleware, complaintController.verifyComplaint);
 router.patch('/:id/status', authMiddleware, adminMiddleware, statusValidation, complaintController.updateStatus);
 
 module.exports = router;

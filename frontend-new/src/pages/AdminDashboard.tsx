@@ -29,6 +29,8 @@ import Grid from '@mui/material/Grid';
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -36,11 +38,15 @@ import {
   ResponsiveContainer,
   Cell,
 } from 'recharts';
-import { Download, Eye, RefreshCw } from 'lucide-react';
+import { Download, Eye, RefreshCw, Trophy, MapPin, BadgeCheck, Clock3 } from 'lucide-react';
+import { io } from 'socket.io-client';
 import { useToast, ToastProvider } from '../context/ToastContext';
 import ToastManager from '../context/ToastManager';
 import api from '../services/api';
 import type { Complaint, Stats } from '../types';
+
+const rawOrigin = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+const API_ORIGIN = rawOrigin.replace(/\/api\/?$/, '') || window.location.origin;
 
 const getModerationDisplay = (complaint: Complaint) => {
   const moderation = complaint.moderation;
@@ -97,6 +103,16 @@ const AdminDashboard: React.FC = () => {
 
   useEffect(() => {
     fetchData();
+  }, []);
+
+  useEffect(() => {
+    const socket = io(API_ORIGIN, { transports: ['websocket', 'polling'] });
+    socket.on('complaint_created', fetchData);
+    socket.on('complaint_updated', fetchData);
+    socket.on('verification_added', fetchData);
+    return () => {
+      socket.disconnect();
+    };
   }, []);
 
   const handleStatusChange = async (id: string, newStatus: string) => {
@@ -268,6 +284,36 @@ const AdminDashboard: React.FC = () => {
             </CardContent>
           </Card>
         </Grid>
+        <Grid size={{ xs: 12, sm: 4 }}>
+          <Card sx={{ boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <CardContent sx={{ p: 2, textAlign: 'center' }}>
+              <Typography variant="h6" fontWeight={700} color="success.main" gutterBottom>
+                Resolved This Month
+              </Typography>
+              <Chip icon={<Clock3 size={16} />} label={`${stats?.resolvedThisMonth || 0}`} color="success" sx={{ mt: 1 }} />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 4 }}>
+          <Card sx={{ boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <CardContent sx={{ p: 2, textAlign: 'center' }}>
+              <Typography variant="h6" fontWeight={700} color="info.main" gutterBottom>
+                Verified Issues
+              </Typography>
+              <Chip icon={<BadgeCheck size={16} />} label={`${stats?.verifiedIssues || 0}`} color="info" sx={{ mt: 1 }} />
+            </CardContent>
+          </Card>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 4 }}>
+          <Card sx={{ boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <CardContent sx={{ p: 2, textAlign: 'center' }}>
+              <Typography variant="h6" fontWeight={700} color="primary.main" gutterBottom>
+                Impact Score
+              </Typography>
+              <Chip icon={<Trophy size={16} />} label={`${stats?.communityImpactScore || 0}`} color="primary" sx={{ mt: 1 }} />
+            </CardContent>
+          </Card>
+        </Grid>
       </Grid>
 
       <Grid
@@ -298,6 +344,79 @@ const AdminDashboard: React.FC = () => {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
+          </Paper>
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 7 }}>
+          <Paper sx={{ p: 3, height: 340, backgroundColor: 'background.paper', borderRadius: 2, boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <Typography variant="h6" fontWeight={700} gutterBottom>
+              Response Time Trend
+            </Typography>
+            <ResponsiveContainer width="100%" height="88%">
+              <LineChart data={stats?.responseTimeTrend || []}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                <XAxis dataKey="day" />
+                <YAxis allowDecimals />
+                <ChartTooltip />
+                <Line type="monotone" dataKey="avgHours" stroke="#2563eb" strokeWidth={3} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </Paper>
+        </Grid>
+
+        <Grid size={{ xs: 12, md: 5 }}>
+          <Paper sx={{ p: 3, minHeight: 340, backgroundColor: 'background.paper', borderRadius: 2, boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <Typography variant="h6" fontWeight={700} gutterBottom>
+              Active Zones
+            </Typography>
+            <Stack spacing={1.5}>
+              {(stats?.activeZones || []).map((zone) => (
+                <Box key={zone.location} sx={{ display: 'flex', justifyContent: 'space-between', gap: 2, alignItems: 'center' }}>
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography variant="body2" fontWeight={700} noWrap>
+                      <MapPin size={14} /> {zone.location}
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary">
+                      {zone.open} open cases
+                    </Typography>
+                  </Box>
+                  <Chip size="small" label={`${zone.count} total`} />
+                </Box>
+              ))}
+              {(!stats?.activeZones || stats.activeZones.length === 0) && (
+                <Typography color="text.secondary">No location data yet.</Typography>
+              )}
+            </Stack>
+          </Paper>
+        </Grid>
+
+        <Grid size={{ xs: 12 }}>
+          <Paper sx={{ p: 3, backgroundColor: 'background.paper', borderRadius: 2, boxShadow: '0 3px 5px rgba(0,0,0,0.1)' }}>
+            <Typography variant="h6" fontWeight={700} gutterBottom>
+              Citizen Leaderboard
+            </Typography>
+            <Grid container spacing={2}>
+              {(stats?.leaderboard || []).slice(0, 6).map((user) => (
+                <Grid size={{ xs: 12, md: 4 }} key={user.email}>
+                  <Card variant="outlined">
+                    <CardContent>
+                      <Stack direction="row" spacing={1.5} alignItems="center">
+                        <Chip label={`#${user.rank}`} color={user.rank <= 3 ? 'primary' : 'default'} />
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography fontWeight={700} noWrap>{user.name}</Typography>
+                          <Typography variant="caption" color="text.secondary">{user.points} points</Typography>
+                        </Box>
+                      </Stack>
+                      <Stack direction="row" spacing={1} sx={{ mt: 1.5, flexWrap: 'wrap' }}>
+                        {(user.badges || []).slice(0, 2).map((badge) => (
+                          <Chip key={badge} size="small" label={badge} variant="outlined" />
+                        ))}
+                      </Stack>
+                    </CardContent>
+                  </Card>
+                </Grid>
+              ))}
+            </Grid>
           </Paper>
         </Grid>
 
@@ -425,6 +544,15 @@ const AdminDashboard: React.FC = () => {
               <Paper variant="outlined" sx={{ p: 2, backgroundColor: 'grey.50' }}>
                 <Stack spacing={1.5}>
                   <Typography variant="body2">
+                    Suggested Category:{' '}
+                    <strong>
+                      {selectedComplaint.aiCategorySuggestion?.category || 'No suggestion'}
+                      {selectedComplaint.aiCategorySuggestion?.confidence
+                        ? ` (${selectedComplaint.aiCategorySuggestion.confidence}%)`
+                        : ''}
+                    </strong>
+                  </Typography>
+                  <Typography variant="body2">
                     Status: <strong>{getModerationDisplay(selectedComplaint).label}</strong>
                   </Typography>
                   <Typography variant="body2">
@@ -457,6 +585,20 @@ const AdminDashboard: React.FC = () => {
               <Typography>
                 {selectedComplaint.isAnonymous ? 'Anonymous' : selectedComplaint.reportedBy || 'User'}
               </Typography>
+
+              <Typography variant="subtitle2">Community Verification</Typography>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Chip
+                  icon={<BadgeCheck size={16} />}
+                  label={`${selectedComplaint.verificationCount || 0} confirmations`}
+                  color={selectedComplaint.verifiedAt ? 'success' : 'default'}
+                />
+                {selectedComplaint.verifiedAt && (
+                  <Typography variant="caption" color="text.secondary">
+                    Verified on {new Date(selectedComplaint.verifiedAt).toLocaleString()}
+                  </Typography>
+                )}
+              </Stack>
 
               <TextField
                 label="Handled By"
@@ -493,6 +635,50 @@ const AdminDashboard: React.FC = () => {
                 </Box>
               ) : (
                 <Typography color="text.secondary">No attachments</Typography>
+              )}
+
+              {((selectedComplaint.imageUrls?.length || 0) > 0 || (selectedComplaint.videoUrls?.length || 0) > 0) && (
+                <>
+                  <Typography variant="subtitle2">Uploaded Media</Typography>
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+                      gap: 1.5,
+                    }}
+                  >
+                    {(selectedComplaint.imageUrls || []).map((url) => (
+                      <Box
+                        key={url}
+                        component="img"
+                        src={url.startsWith('/uploads') ? `${API_ORIGIN}${url}` : url}
+                        alt="Uploaded complaint"
+                        sx={{
+                          width: '100%',
+                          height: 130,
+                          objectFit: 'cover',
+                          borderRadius: 2,
+                          border: '1px solid rgba(15, 23, 42, 0.12)',
+                        }}
+                      />
+                    ))}
+                    {(selectedComplaint.videoUrls || []).map((url) => (
+                      <Box
+                        key={url}
+                        component="video"
+                        src={url.startsWith('/uploads') ? `${API_ORIGIN}${url}` : url}
+                        controls
+                        sx={{
+                          width: '100%',
+                          height: 130,
+                          objectFit: 'cover',
+                          borderRadius: 2,
+                          border: '1px solid rgba(15, 23, 42, 0.12)',
+                        }}
+                      />
+                    ))}
+                  </Box>
+                </>
               )}
             </Stack>
           )}
