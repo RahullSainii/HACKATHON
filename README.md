@@ -11,6 +11,18 @@ Built for the **Vibe2Ship Hackathon** and deployed on **Google Cloud Run**.
 **Cloud Run:** https://samadhaan-vibe2ship-297216988135.europe-west1.run.app  
 **Health Check:** https://samadhaan-vibe2ship-297216988135.europe-west1.run.app/api/health
 
+### Demo Login For Judges
+
+Use these credentials to review the full admin workflow:
+
+```text
+Admin URL: /admin
+Email: admin@samadhaan.demo
+Password: Samadhaan@123
+```
+
+For the normal user workflow, create a new account from the Register page and submit a test complaint.
+
 ## Why Samadhaan
 
 Most complaint systems stop at "submit a ticket." Samadhaan goes further:
@@ -171,10 +183,12 @@ JWT_SECRET=replace_with_a_long_random_secret
 ### Recommended Admin Seed
 
 ```env
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=replace_with_secure_password
+ADMIN_EMAIL=admin@samadhaan.demo
+ADMIN_PASSWORD=Samadhaan@123
 ADMIN_NAME=Admin
 ```
+
+These variables create the demo admin user when the backend starts. Change the password after hackathon judging if this deployment remains public.
 
 ### Optional
 
